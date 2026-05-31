@@ -411,9 +411,12 @@ class LLMClient:
             "num_retries": options.get("num_retries", _MAX_RETRIES),
             "drop_params": options.get("drop_params", True),
             "api_key": entry.api_key or None,
-            "api_base": entry.base_url or None,
-            "base_url": entry.base_url or None,
         }
+        if entry.provider != "gemini":
+            kwargs["api_base"] = entry.base_url or None
+            kwargs["base_url"] = entry.base_url or None
+        # Gemini's native LiteLLM provider must not receive Google's
+        # OpenAI-compatible /openai base URL; it builds :generateContent itself.
         if temperature is not None:
             kwargs["temperature"] = temperature
         kwargs.update(options.get("extra", {}))
