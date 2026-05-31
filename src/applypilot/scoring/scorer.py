@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 MAX_SCORE_ATTEMPTS_PER_JOB = 3
 SCORE_ATTEMPT_BACKOFF_SECONDS = 1.0
 SCORING_MAX_OUTPUT_TOKENS = 3072
+SCORING_LLM_MODELS_ENV = "SCORING_LLM_MODELS"
 _LEGACY_SCORE_ERROR_PATTERN = "%LLM error:%"
 _MODEL_RESPONSE_SNIPPET_LIMIT = 320
 _SCORE_TRACE_ENABLED = os.environ.get("APPLYPILOT_SCORE_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -292,6 +293,25 @@ def _safe_response_snippet(text: str, limit: int = _MODEL_RESPONSE_SNIPPET_LIMIT
     if len(snippet) <= limit:
         return snippet
     return snippet[: limit - 3] + "..."
+
+
+def _scoring_llm_models(environ: dict[str, str] | None = None) -> list[str]:
+    """Return scoring-only model overrides, preserving normal LLM config by default."""
+
+    env = os.environ if environ is None else environ
+    raw = env.get(SCORING_LLM_MODELS_ENV, "")
+    models: list[str] = []
+    for item in raw.split(","):
+        model = item.strip()
+        if not model:
+            continue
+        models.append(model if "/" in model else f"gemini/{model}")
+    return models
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(token in message for token in ("429", "rate limit", "ratelimit", "resource_exhausted"))
 
 
 def _truncate_piece(text: str, limit: int = 28) -> str:
@@ -1019,71 +1039,80 @@ def score_job(resume_text: str, job: dict, scoring_profile: dict) -> dict:
     ]
 
     client = get_client()
+    scoring_models = _scoring_llm_models()
     final_failure: dict | None = None
     for attempt in range(1, MAX_SCORE_ATTEMPTS_PER_JOB + 1):
         raw_response = ""
-        try:
-            raw_response = client.chat(
-                messages,
-                # 768 was too low for Gemini 2.5 because thinking tokens could
-                # truncate JSON. 3072 is the normal default; use 4096/8192 only
-                # if truncation returns.
-                max_output_tokens=SCORING_MAX_OUTPUT_TOKENS,
-                temperature=0,
-                response_format=SCORING_RESPONSE_FORMAT,
-            )
-            parsed = _parse_score_response(raw_response)
+        models_to_try = scoring_models or [None]
+        for model_index, scoring_model in enumerate(models_to_try):
+            try:
+                chat_kwargs = {
+                    # 768 was too low for Gemini 2.5 because thinking tokens could
+                    # truncate JSON. 3072 is the normal default; use 4096/8192 only
+                    # if truncation returns.
+                    "max_output_tokens": SCORING_MAX_OUTPUT_TOKENS,
+                    "temperature": 0,
+                    "response_format": SCORING_RESPONSE_FORMAT,
+                }
+                if scoring_model:
+                    chat_kwargs["model"] = scoring_model
+                raw_response = client.chat(messages, **chat_kwargs)
+                parsed = _parse_score_response(raw_response)
 
-            llm_score = int(parsed["score"])
-            llm_confidence = float(parsed["confidence"])
-            matched_skills = parsed["matched_skills"] or baseline["matched_skills"]
-            missing_requirements = parsed["missing_requirements"] or baseline["missing_requirements"]
-            final_score, delta = _apply_score_calibration(
-                baseline=baseline,
-                llm_score=llm_score,
-                confidence=llm_confidence,
-                matched_skills=matched_skills,
-                missing_requirements=missing_requirements,
-                job_context=job_text,
-            )
+                llm_score = int(parsed["score"])
+                llm_confidence = float(parsed["confidence"])
+                matched_skills = parsed["matched_skills"] or baseline["matched_skills"]
+                missing_requirements = parsed["missing_requirements"] or baseline["missing_requirements"]
+                final_score, delta = _apply_score_calibration(
+                    baseline=baseline,
+                    llm_score=llm_score,
+                    confidence=llm_confidence,
+                    matched_skills=matched_skills,
+                    missing_requirements=missing_requirements,
+                    job_context=job_text,
+                )
 
-            return {
-                "score": final_score,
-                "keywords": ", ".join(matched_skills[:12]),
-                "reasoning": (
-                    f"Baseline={baseline['score']} LLM={llm_score} Confidence={llm_confidence:.2f} Delta={delta}. "
-                    f"{parsed['reasoning']}"
-                ),
-                "llm_why_short": str(parsed["why_short"]),
-                "llm_reasoning_full": str(parsed["reasoning"]),
-                "matched_skills": matched_skills[:12],
-                "missing_requirements": missing_requirements[:12],
-                "baseline_score": baseline["score"],
-                "llm_score": llm_score,
-                "llm_confidence": round(llm_confidence, 3),
-                "score_delta": delta,
-                "normalized_title": baseline["normalized_title"],
-            }
-        except ScoreResponseParseError as exc:
-            snippet = _safe_response_snippet(raw_response)
-            final_failure = {
-                "score": 0,
-                "keywords": "",
-                "reasoning": f"LLM parse error [{exc.category}]: {exc}. raw='{snippet}'",
-                "parse_error_category": exc.category,
-                "raw_response_snippet": snippet,
-                "baseline_score": baseline["score"],
-                "normalized_title": baseline["normalized_title"],
-            }
-        except Exception as exc:
-            final_failure = {
-                "score": 0,
-                "keywords": "",
-                "reasoning": f"LLM error: {exc}",
-                "parse_error_category": "llm_request_error",
-                "baseline_score": baseline["score"],
-                "normalized_title": baseline["normalized_title"],
-            }
+                return {
+                    "score": final_score,
+                    "keywords": ", ".join(matched_skills[:12]),
+                    "reasoning": (
+                        f"Baseline={baseline['score']} LLM={llm_score} Confidence={llm_confidence:.2f} Delta={delta}. "
+                        f"{parsed['reasoning']}"
+                    ),
+                    "llm_why_short": str(parsed["why_short"]),
+                    "llm_reasoning_full": str(parsed["reasoning"]),
+                    "matched_skills": matched_skills[:12],
+                    "missing_requirements": missing_requirements[:12],
+                    "baseline_score": baseline["score"],
+                    "llm_score": llm_score,
+                    "llm_confidence": round(llm_confidence, 3),
+                    "score_delta": delta,
+                    "normalized_title": baseline["normalized_title"],
+                }
+            except ScoreResponseParseError as exc:
+                snippet = _safe_response_snippet(raw_response)
+                final_failure = {
+                    "score": 0,
+                    "keywords": "",
+                    "reasoning": f"LLM parse error [{exc.category}]: {exc}. raw='{snippet}'",
+                    "parse_error_category": exc.category,
+                    "raw_response_snippet": snippet,
+                    "baseline_score": baseline["score"],
+                    "normalized_title": baseline["normalized_title"],
+                }
+                break
+            except Exception as exc:
+                final_failure = {
+                    "score": 0,
+                    "keywords": "",
+                    "reasoning": f"LLM error: {exc}",
+                    "parse_error_category": "llm_request_error",
+                    "baseline_score": baseline["score"],
+                    "normalized_title": baseline["normalized_title"],
+                }
+                if scoring_model and _is_rate_limit_error(exc) and model_index < len(models_to_try) - 1:
+                    continue
+                break
 
         if attempt < MAX_SCORE_ATTEMPTS_PER_JOB:
             category = final_failure.get("parse_error_category", "unknown") if final_failure else "unknown"

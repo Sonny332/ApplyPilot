@@ -160,6 +160,84 @@ def test_score_job_uses_normal_output_budget_for_gemini_thinking(monkeypatch) ->
     assert fake_client.kwargs["max_output_tokens"] == 3072
 
 
+def test_parse_scoring_llm_models_adds_gemini_prefix(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SCORING_LLM_MODELS",
+        "gemini-3.1-flash-lite, gemini/gemini-3.5-flash, ,gemini-3-flash",
+    )
+
+    assert scorer._scoring_llm_models() == [
+        "gemini/gemini-3.1-flash-lite",
+        "gemini/gemini-3.5-flash",
+        "gemini/gemini-3-flash",
+    ]
+
+
+def test_score_job_falls_back_to_next_scoring_model_on_429(monkeypatch) -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.models = []
+
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self.models.append(kwargs.get("model"))
+            if len(self.models) == 1:
+                raise RuntimeError("LLM request failed: 429 rate limit")
+            return (
+                '{"score": 8, "confidence": 0.9, "why_short": "Strong backend overlap", '
+                '"matched_skills": ["python"], "missing_requirements": [], "reasoning": "Strong fit"}'
+            )
+
+    fake_client = _FakeClient()
+    monkeypatch.setenv("SCORING_LLM_MODELS", "gemini-3.1-flash-lite,gemini-3.5-flash")
+    monkeypatch.setattr(scorer, "get_client", lambda: fake_client)
+    monkeypatch.setattr(scorer, "SCORE_ATTEMPT_BACKOFF_SECONDS", 0.0)
+
+    scoring_profile = scorer._build_scoring_profile(_sample_profile())
+    result = scorer.score_job(
+        resume_text="Senior software engineer with Python and React.",
+        job={
+            "title": "Senior Backend Engineer",
+            "site": "ExampleCo",
+            "location": "Remote",
+            "full_description": "Requirements: Python, REST APIs, AWS.",
+        },
+        scoring_profile=scoring_profile,
+    )
+
+    assert fake_client.models == ["gemini/gemini-3.1-flash-lite", "gemini/gemini-3.5-flash"]
+    assert result["score"] > 0
+
+
+def test_score_job_does_not_fallback_models_on_malformed_json(monkeypatch) -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.models = []
+
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self.models.append(kwargs.get("model"))
+            return "this is not json"
+
+    fake_client = _FakeClient()
+    monkeypatch.setenv("SCORING_LLM_MODELS", "gemini-3.1-flash-lite,gemini-3.5-flash")
+    monkeypatch.setattr(scorer, "get_client", lambda: fake_client)
+    monkeypatch.setattr(scorer, "SCORE_ATTEMPT_BACKOFF_SECONDS", 0.0)
+
+    scoring_profile = scorer._build_scoring_profile(_sample_profile())
+    result = scorer.score_job(
+        resume_text="Senior software engineer with Python and React.",
+        job={
+            "title": "Senior Backend Engineer",
+            "site": "ExampleCo",
+            "location": "Remote",
+            "full_description": "Requirements: Python, REST APIs, AWS.",
+        },
+        scoring_profile=scoring_profile,
+    )
+
+    assert fake_client.models == ["gemini/gemini-3.1-flash-lite"] * scorer.MAX_SCORE_ATTEMPTS_PER_JOB
+    assert result["parse_error_category"] == "missing_json_object"
+
+
 def test_engineering_fit_guardrail_blocks_bottom_bucket_without_hard_mismatch() -> None:
     scoring_profile = scorer._build_scoring_profile(_sample_profile())
     job = {
