@@ -20,6 +20,7 @@ from applypilot.resume_json import get_profile_skill_keywords
 log = logging.getLogger(__name__)
 MAX_SCORE_ATTEMPTS_PER_JOB = 3
 SCORE_ATTEMPT_BACKOFF_SECONDS = 1.0
+SCORING_MAX_OUTPUT_TOKENS = 3072
 _LEGACY_SCORE_ERROR_PATTERN = "%LLM error:%"
 _MODEL_RESPONSE_SNIPPET_LIMIT = 320
 _SCORE_TRACE_ENABLED = os.environ.get("APPLYPILOT_SCORE_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -1024,7 +1025,10 @@ def score_job(resume_text: str, job: dict, scoring_profile: dict) -> dict:
         try:
             raw_response = client.chat(
                 messages,
-                max_output_tokens=768,
+                # 768 was too low for Gemini 2.5 because thinking tokens could
+                # truncate JSON. 3072 is the normal default; use 4096/8192 only
+                # if truncation returns.
+                max_output_tokens=SCORING_MAX_OUTPUT_TOKENS,
                 temperature=0,
                 response_format=SCORING_RESPONSE_FORMAT,
             )

@@ -130,6 +130,36 @@ def test_score_job_retries_inline_until_it_gets_valid_json(monkeypatch) -> None:
     assert result["llm_reasoning_full"] == "Strong fit"
 
 
+def test_score_job_uses_normal_output_budget_for_gemini_thinking(monkeypatch) -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self.kwargs = kwargs
+            return (
+                '{"score": 8, "confidence": 0.9, "why_short": "Strong backend overlap", '
+                '"matched_skills": ["python"], "missing_requirements": [], "reasoning": "Strong fit"}'
+            )
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr(scorer, "get_client", lambda: fake_client)
+
+    scoring_profile = scorer._build_scoring_profile(_sample_profile())
+    scorer.score_job(
+        resume_text="Senior software engineer with Python and React.",
+        job={
+            "title": "Senior Backend Engineer",
+            "site": "ExampleCo",
+            "location": "Remote",
+            "full_description": "Requirements: Python, REST APIs, AWS.",
+        },
+        scoring_profile=scoring_profile,
+    )
+
+    assert fake_client.kwargs["max_output_tokens"] == 3072
+
+
 def test_engineering_fit_guardrail_blocks_bottom_bucket_without_hard_mismatch() -> None:
     scoring_profile = scorer._build_scoring_profile(_sample_profile())
     job = {
