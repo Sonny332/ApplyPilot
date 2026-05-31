@@ -247,8 +247,12 @@ def build_codex_command(
 ) -> list[str]:
     """Build the Codex exec command line."""
 
+    codex_binary = shutil.which("codex")
+    if not codex_binary:
+        raise BackendError("Codex CLI was not found on PATH. Check PATH or reinstall the Codex CLI.")
+
     cmd = [
-        "codex",
+        codex_binary,
         "exec",
         "--dangerously-bypass-approvals-and-sandbox",
         "--ephemeral",
@@ -904,16 +908,21 @@ def resolve_default_agent(backend_name: str, environ: Mapping[str, str] | None =
 
 
 def _build_codex_config_overrides(port: int) -> list[str]:
+    npx_binary = shutil.which("npx")
+    if not npx_binary:
+        raise BackendError("npx was not found on PATH. Check PATH or reinstall Node.js/npm.")
+
+    npx_command = json.dumps(npx_binary)
     gmail_tools = ",".join(f'"{tool}"' for tool in DISALLOWED_GMAIL_TOOLS)
     return [
-        'mcp_servers.playwright.command="npx"',
+        f"mcp_servers.playwright.command={npx_command}",
         (
             'mcp_servers.playwright.args=['
             f'"@playwright/mcp@latest","--cdp-endpoint=http://localhost:{port}",'
             f'"--viewport-size={config.DEFAULTS["viewport"]}"'
             "]"
         ),
-        'mcp_servers.gmail.command="npx"',
+        f"mcp_servers.gmail.command={npx_command}",
         'mcp_servers.gmail.args=["-y","@gongrzhe/server-gmail-autoauth-mcp"]',
         f"mcp_servers.gmail.disabled_tools=[{gmail_tools}]",
     ]
