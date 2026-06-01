@@ -178,6 +178,24 @@ utility energy analyst
 3. high-fit 候选不足时，不应强行 tailor、cover、apply。
 4. 正式数据目录不能被 smoke 测试污染。
 5. upstream PR 需要先拆分，不能从 Sonny 长期分支直接提交。
+6. Windows pytest 偶发 `PermissionError` 是已知本地问题，通常由固定 `.tmp\pytest` 清理、文件锁或权限上下文造成；优先避免 repo-local 固定 `--basetemp`。
+
+### Windows pytest 临时目录建议
+
+后续本地测试优先使用 pytest 默认临时目录：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/test_scoring_resilience.py -q
+```
+
+如果需要显式指定临时目录，使用系统临时目录下的唯一目录：
+
+```powershell
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+.\.venv\Scripts\python.exe -m pytest --basetemp "$env:TEMP\applypilot_pytest_$ts" -p no:cacheprovider tests/test_scoring_resilience.py -q
+```
+
+不要默认提权运行 pytest。不要在未获 Sonny 明确批准时删除 `.tmp`、缓存目录或任何测试残留目录。若旧 `.tmp\pytest` 仍被锁定，应先报告，由 Sonny 手动决定是关闭相关进程还是删除该目录。
 
 ## 13. 下一步建议
 

@@ -213,6 +213,29 @@ SCORING_LLM_MODELS=gemini-3.1-flash-lite,gemini-3.5-flash,gemini-3-flash,gemini-
 
 7. 出现 429 时，不得暴力重试；应报告 rate-limit 并等待下一步指示。
 
+### Windows pytest 临时目录规则
+
+在 Windows 环境下，避免使用固定路径 `--basetemp .tmp\pytest`，因为 pytest 会在运行前清空该目录；如果该目录被 Python、编辑器、杀毒软件、Codex、VS Code、PowerShell 或其他进程占用，可能触发 `PermissionError`。
+
+优先使用以下两种方式之一：
+
+1. 不指定 `--basetemp`，使用 pytest 默认临时目录：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/test_scoring_resilience.py -q
+```
+
+2. 或使用系统临时目录下的唯一目录：
+
+```powershell
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+.\.venv\Scripts\python.exe -m pytest --basetemp "$env:TEMP\applypilot_pytest_$ts" -p no:cacheprovider tests/test_scoring_resilience.py -q
+```
+
+不得为了通过测试而默认提权运行。只有在明确确认是历史临时目录权限问题、且唯一 temp 目录测试已通过时，才允许向 Sonny 报告并请求是否手动清理旧 `.tmp` 目录。
+
+不得在未获 Sonny 明确批准时删除 `.tmp`、缓存目录或任何测试残留目录。
+
 ## 9. Handoff 交接规则
 
 1. 必须维护：
