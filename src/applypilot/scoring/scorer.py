@@ -1054,6 +1054,110 @@ def _has_hard_mismatch_evidence(baseline: dict, missing_requirements: list[str],
     return any(term in evidence_blob for term in _HARD_MISMATCH_TERMS)
 
 
+_DATA_CENTER_ADJACENT_SKILL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("thermodynamics", re.compile(r"\bthermodynamics\b", re.IGNORECASE)),
+    ("heat transfer", re.compile(r"\bheat transfer\b", re.IGNORECASE)),
+    ("fluid mechanics", re.compile(r"\bfluid mechanics\b|\bfluid flow\b", re.IGNORECASE)),
+    ("HVAC", re.compile(r"\bHVAC\b|\bheating, ventilation, and air conditioning\b", re.IGNORECASE)),
+    ("building systems", re.compile(r"\bbuilding systems?\b|\bmechanical systems?\b", re.IGNORECASE)),
+    ("energy efficiency", re.compile(r"\benergy efficiency\b", re.IGNORECASE)),
+    ("energy modeling", re.compile(r"\benergy model(?:ing|ling)?\b", re.IGNORECASE)),
+    ("ANSYS Fluent", re.compile(r"\bANSYS\b|\bFluent\b", re.IGNORECASE)),
+    ("MATLAB", re.compile(r"\bMATLAB\b", re.IGNORECASE)),
+    ("AutoCAD", re.compile(r"\bAutoCAD\b|\bCAD\b", re.IGNORECASE)),
+    ("facilities operations", re.compile(r"\bfacilit(?:y|ies) operations\b|\bbuilding operations\b", re.IGNORECASE)),
+    (
+        "utility tariff / energy cost analysis",
+        re.compile(r"\btariff(?:s)?\b|\butility analysis\b|\benergy cost(?:s)?\b|\brate design\b", re.IGNORECASE),
+    ),
+    ("financial modeling", re.compile(r"\bfinancial model(?:ing|ling)?\b|\bIRR\b|\bNPV\b|\bROI\b", re.IGNORECASE)),
+)
+
+
+def _data_center_elasticity_blocker(job_text: str, baseline: dict) -> str | None:
+    lowered = (job_text or "").lower()
+    title_text = lowered.splitlines()[0] if lowered else ""
+    if title_text.startswith("title:"):
+        title_text = title_text.removeprefix("title:").strip()
+
+    if re.search(
+        r"\b(no visa sponsorship|unable to sponsor|will not sponsor|must not require sponsorship|without sponsorship now or in the future)\b",
+        lowered,
+    ):
+        return "no_sponsorship"
+    if re.search(
+        r"\b(us citizen only|u\.s\. citizen only|citizenship required|clearance|ts/sci|secret clearance|active clearance)\b",
+        lowered,
+    ):
+        return "citizenship_or_clearance"
+    if re.search(r"\b(director|principal|vp|vice president|chief)\b", title_text):
+        return "executive_or_principal"
+    if re.search(r"\b10\+?\s+years?.{0,40}\bmanagement\b|\bmanagement experience required\b", lowered):
+        return "management_10_plus"
+    if re.search(r"\b(technician|noc|operator|field service)\b", title_text):
+        return "technician_operator_noc_field_service"
+    if re.search(r"\b(sales|account executive|business development)\b", title_text) or re.search(
+        r"\bcommission(?:ed|s)?\b", lowered
+    ):
+        return "sales_or_commission"
+    if int(baseline.get("seniority_gap") or 0) >= 2:
+        return "executive_or_principal"
+    return None
+
+
+def _is_data_center_thermal_role(baseline: dict, job_context: str) -> bool:
+    if baseline.get("job_role_family") == "data_center_energy_thermal":
+        return True
+    title_text = (job_context or "").splitlines()[0] if job_context else ""
+    if title_text.lower().startswith("title:"):
+        title_text = title_text.split(":", 1)[1].strip()
+    return _infer_role_family(title_text) == "data_center_energy_thermal"
+
+
+def _data_center_adjacent_skill_count(baseline: dict, matched_skills: list[str], job_context: str) -> int:
+    evidence_text = " ".join(
+        [
+            " ".join(matched_skills or []),
+            " ".join(baseline.get("matched_skills") or []),
+            job_context or "",
+        ]
+    )
+    return sum(1 for _, pattern in _DATA_CENTER_ADJACENT_SKILL_PATTERNS if pattern.search(evidence_text))
+
+
+def _apply_data_center_market_elasticity(
+    calibrated_score: int,
+    baseline: dict,
+    matched_skills: list[str],
+    missing_requirements: list[str],
+    job_context: str,
+) -> int:
+    if not _is_data_center_thermal_role(baseline, job_context):
+        return calibrated_score
+
+    blocker = _data_center_elasticity_blocker(job_context, baseline)
+    if blocker in {"no_sponsorship", "citizenship_or_clearance"}:
+        return min(calibrated_score, 2)
+    if blocker in {"technician_operator_noc_field_service", "sales_or_commission"}:
+        return min(calibrated_score, 3)
+    if blocker in {"executive_or_principal", "management_10_plus"}:
+        return min(calibrated_score, 4)
+
+    adjacent_skill_count = _data_center_adjacent_skill_count(baseline, matched_skills, job_context)
+    if adjacent_skill_count >= 5:
+        increase = 2
+        cap = 6
+    elif adjacent_skill_count >= 3:
+        increase = 1
+        cap = 5
+    else:
+        return calibrated_score
+
+    if re.search(r"\b(associate|engineer|analyst|specialist|mid[\s-]?level)\b", job_context or "", re.IGNORECASE):
+        cap = max(cap, 7)
+    return min(cap, calibrated_score + increase)
+
+
 def _apply_score_calibration(
     baseline: dict,
     llm_score: int,
@@ -1103,6 +1207,14 @@ def _apply_score_calibration(
     if not hard_mismatch and evidence_score >= 0.35:
         dynamic_floor = max(3, min(5, int(round(1.0 + 5.0 * evidence_score))))
         calibrated = max(calibrated, dynamic_floor)
+
+    calibrated = _apply_data_center_market_elasticity(
+        calibrated_score=calibrated,
+        baseline=baseline,
+        matched_skills=matched_skills,
+        missing_requirements=missing_requirements,
+        job_context=job_context,
+    )
 
     return calibrated, calibrated - baseline_score
 

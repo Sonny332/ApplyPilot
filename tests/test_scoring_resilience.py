@@ -27,6 +27,80 @@ def _sample_profile() -> dict:
     }
 
 
+def _sonny_energy_profile() -> dict:
+    return {
+        "experience": {
+            "target_role": "Energy Analyst / Energy Engineer / Building Performance Analyst",
+            "years_of_experience_total": "5",
+        },
+        "work": [
+            {
+                "position": "Energy Analyst & Business Analyst",
+                "technologies": [
+                    "HVAC",
+                    "building systems",
+                    "energy efficiency",
+                    "energy modeling",
+                    "utility tariff analysis",
+                    "financial modeling",
+                    "facilities operations",
+                ],
+            },
+            {
+                "position": "Renewable Energy Engineer",
+                "technologies": [
+                    "ANSYS Fluent",
+                    "MATLAB",
+                    "AutoCAD",
+                    "thermodynamics",
+                    "heat transfer",
+                    "fluid mechanics",
+                ],
+            },
+        ],
+        "skills": [
+            {
+                "name": "Energy and Building Systems",
+                "keywords": [
+                    "HVAC",
+                    "building systems",
+                    "energy efficiency",
+                    "energy modeling",
+                    "utility tariff analysis",
+                    "financial modeling",
+                    "facilities operations",
+                ],
+            },
+            {
+                "name": "Engineering Tools",
+                "keywords": [
+                    "ANSYS Fluent",
+                    "MATLAB",
+                    "AutoCAD",
+                    "thermodynamics",
+                    "heat transfer",
+                    "fluid mechanics",
+                ],
+            },
+        ],
+    }
+
+
+def _calibrated_score_for_energy_job(title: str, description: str, llm_score: int = 3) -> int:
+    scoring_profile = scorer._build_scoring_profile(_sonny_energy_profile())
+    job = {"title": title, "full_description": description}
+    baseline = scorer._compute_deterministic_baseline(scoring_profile, job)
+    final_score, _ = scorer._apply_score_calibration(
+        baseline=baseline,
+        llm_score=llm_score,
+        confidence=0.95,
+        matched_skills=baseline["matched_skills"],
+        missing_requirements=baseline["missing_requirements"],
+        job_context=f"{title}\n{description}",
+    )
+    return final_score
+
+
 def _make_jobs_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -306,6 +380,78 @@ def test_non_fit_role_baseline_and_calibrated_score_stay_low() -> None:
 
     assert baseline["score"] <= 3
     assert final_score <= 4
+
+
+def test_data_center_thermal_role_gets_market_elasticity_for_adjacent_evidence() -> None:
+    score = _calibrated_score_for_energy_job(
+        "Data Center Thermal Solutions Engineer",
+        (
+            "Design emerging AI data center thermal solutions using HVAC, building systems, "
+            "heat transfer, thermodynamics, ANSYS Fluent, energy modeling, chilled water, "
+            "liquid cooling, and PUE analysis."
+        ),
+    )
+
+    assert 5 <= score <= 7
+
+
+def test_data_center_cooling_expert_moves_to_manual_review_range() -> None:
+    score = _calibrated_score_for_energy_job(
+        "Data Center Cooling Expert",
+        (
+            "Support data center cooling infrastructure, HVAC optimization, energy efficiency, "
+            "facilities operations, financial modeling, thermal management, liquid cooling, "
+            "and chilled water retrofit planning."
+        ),
+    )
+
+    assert 5 <= score <= 6
+
+
+def test_principal_thermal_engineer_elasticity_cap_stays_low() -> None:
+    score = _calibrated_score_for_energy_job(
+        "Principal Thermal Engineer",
+        (
+            "Principal thermal engineer for data center liquid cooling platforms. "
+            "Requires 12+ years of thermal design leadership and management experience."
+        ),
+        llm_score=5,
+    )
+
+    assert score <= 4
+
+
+def test_noc_technician_data_center_not_boosted() -> None:
+    score = _calibrated_score_for_energy_job(
+        "NOC Technician",
+        "Monitor data center network operations, rack cabling, alerts, incidents, and night shift handoffs.",
+        llm_score=5,
+    )
+
+    assert score <= 3
+
+
+def test_sales_engineer_or_commission_role_not_boosted() -> None:
+    score = _calibrated_score_for_energy_job(
+        "Data Center Cooling Sales Engineer",
+        "Commission sales role for data center cooling products, account development, and business development.",
+        llm_score=5,
+    )
+
+    assert score <= 3
+
+
+def test_no_sponsorship_data_center_role_not_boosted() -> None:
+    score = _calibrated_score_for_energy_job(
+        "Data Center Cooling Engineer",
+        (
+            "Work on HVAC and thermal management for data center cooling. "
+            "Unable to sponsor now or in the future; candidates must not require sponsorship."
+        ),
+        llm_score=5,
+    )
+
+    assert score <= 2
 
 
 def test_near_identical_titles_have_bounded_baseline_and_calibrated_variance() -> None:

@@ -96,20 +96,17 @@ D:\Codex\ApplyPilot-smoke-data
 5. scoring-only `SCORING_LLM_MODELS` fallback：遇到 429/rate-limit 时按顺序尝试 Gemini 多模型。
 6. deterministic scoring rules 已增强对 energy/building/HVAC/renewable/data-center thermal 的识别。
 7. smoke data 目录已用于隔离测试，避免污染正式数据。
+8. Sonny-only data center thermal market elasticity 已加入 scoring：用于把合理的新兴 data center cooling / thermal 岗位推进 manual-review 范围，同时保持 sponsorship、clearance、seniority、technician/NOC/operator、sales/commission 等 hard blockers 严格生效；该改动不作为 upstream PR 候选。
 
 ## 8. 当前未提交改动
 
-当前存在未提交本地改动，主要包括：
+当前本地适配改动已拆分为独立 commit。接手时应先运行：
 
-* `AGENTS.md`
-* `docs/SONNY_HANDOFF.md`
-* `package-lock.json`
-* `src/applypilot/apply/agent_backends.py`
-* `src/applypilot/llm.py`
-* `src/applypilot/scoring/scorer.py`
-* `tests/test_scoring_resilience.py`
+```powershell
+git status --short
+```
 
-不要在 Sonny 未批准前 commit 或 push。
+如存在新的未提交改动，不要在 Sonny 未批准前继续 commit 或 push。
 
 ## 9. 已通过测试
 
@@ -123,6 +120,7 @@ D:\Codex\ApplyPilot-smoke-data
 6. deterministic helper inspection 已确认：
    * energy / building / HVAC / renewable / data-center thermal 能被识别；
    * Technician / NOC / operator / marketing 没有被错误抬高。
+7. data center thermal market elasticity focused tests 曾通过，覆盖 plausible cooling/thermal manual-review uplift，以及 Principal、NOC technician、sales/commission、no-sponsorship hard blockers。
 
 新窗口接手时，如果要继续改代码，应重新跑与当前修改相关的 focused tests。
 
@@ -134,6 +132,7 @@ D:\Codex\ApplyPilot-smoke-data
 * 最近 smoke scoring 没有 Gemini 429 rate-limit errors。
 * 当前问题不是 scoring runtime，而是候选池质量。
 * 当前没有 `fit_score >= 6` 的候选。
+* `fit_score = 5` 对 data center cooling / thermal 新兴岗位只代表 manual review / opportunity candidate，不自动进入 apply。
 
 当前默认 scoring fallback：
 
